@@ -1,72 +1,136 @@
-# Claude Code
+# Claude Code in WSL — FNBA fork
 
-![](https://img.shields.io/badge/Node.js-18%2B-brightgreen?style=flat-square) [![npm]](https://www.npmjs.com/package/@anthropic-ai/claude-code)
+This branch (`fnba/main`) overlays the upstream `anthropics/claude-code`
+devcontainer with the minimum needed to run it as a long-lived Docker
+container driven from a WSL terminal at FNBA.
 
-[npm]: https://img.shields.io/npm/v/@anthropic-ai/claude-code.svg?style=flat-square
+It is intentionally thin. Per-repo runtimes (Java, Maven, Node, pnpm, …)
+are **not** in this image — each repo brings its own via its own
+`docker-compose.local.yml` running as a sibling container on the WSL
+Docker daemon.
 
-Claude Code is an agentic coding tool that lives in your terminal, understands your codebase, and helps you code faster by executing routine tasks, explaining complex code, and handling git workflows -- all through natural language commands. Use it in your terminal, IDE, or tag @claude on Github.
+## Prerequisites
 
-**Learn more in the [official documentation](https://code.claude.com/docs/en/overview)**.
+- Windows + WSL2 with a Linux distro (Ubuntu, Debian, etc.)
+- Docker Desktop installed with the WSL integration enabled for that distro
+- This repo cloned **inside** the WSL distro (e.g. `~/github/hwieland-fnba/claude-code`)
+- You are logged into the WSL distro as the user whose `~/` you want to be
+  the container's homebase
 
-<img src="./demo.gif" />
+## One-time setup
 
-## Get started
-> [!NOTE]
-> Installation via npm is deprecated. Use one of the recommended methods below.
+```bash
+cd ~/github/hwieland-fnba/claude-code
+git checkout fnba/main
+./scripts/wsl-up.sh
+```
 
-For more installation options, uninstall steps, and troubleshooting, see the [setup documentation](https://code.claude.com/docs/en/setup).
+`wsl-up.sh` will:
 
-1. Install Claude Code:
+1. Write `.env` from your WSL `$USER`, `id -u`, `id -g`, `$HOME` (only if
+   `.env` doesn't already exist — edit it by hand for overrides)
+2. `docker compose up -d --build`
+3. If `~/.claude/.fnba-bootstrap-done` is missing in your homebase,
+   run the **first-time setup** (see next section) inside the container
+4. `docker exec -it claude-<your-user> bash` to drop you into the container
 
-    **MacOS/Linux (Recommended):**
-    ```bash
-    curl -fsSL https://claude.ai/install.sh | bash
-    ```
+## First-time setup (auto, one-shot)
 
-    **Homebrew (MacOS/Linux):**
-    ```bash
-    brew install --cask claude-code
-    ```
+The first time `wsl-up.sh` brings the container up against an empty
+homebase, it runs `/opt/fnba-bootstrap/first-time-setup.sh` for you. That
+script:
 
-    **Windows (Recommended):**
-    ```powershell
-    irm https://claude.ai/install.ps1 | iex
-    ```
+1. Asks you to confirm (`[Y/n]`).
+2. Prompts for your name and email (defaults from `git config --global`
+   if present).
+3. Looks for an SSH key in `~/.ssh`. **SSH from homebase is the default
+   git auth strategy.** If you have a key, the script seeds
+   `~/.ssh/known_hosts` with GitHub and sets your `~/.gitconfig`
+   identity. If not, it tells you to run `ssh-keygen` and continues.
+4. Lays down a starter `.claude/` tree in your homebase:
+   - `~/CLAUDE.md` — top-level project guide (name/email interpolated)
+   - `~/.claude/commands/pde.md` — `/pde` slash command
+   - `~/.claude/settings.json` — minimal settings + community Atlassian
+     remote MCP server (OAuth — no token written to disk)
+   - `~/.claude/projects/-home-<you>/memory/MEMORY.md` — empty
+     auto-memory scaffold
+5. Writes the sentinel `~/.claude/.fnba-bootstrap-done` so subsequent
+   `wsl-up.sh` runs skip the setup.
 
-    **WinGet (Windows):**
-    ```powershell
-    winget install Anthropic.ClaudeCode
-    ```
+Every write is idempotent — pre-existing files in your homebase are
+**never** overwritten. To re-run setup after editing the bundle in the
+fork, delete the sentinel: `rm ~/.claude/.fnba-bootstrap-done`.
 
-    **NPM (Deprecated):**
-    ```bash
-    npm install -g @anthropic-ai/claude-code
-    ```
+### PAT fallback (not yet implemented)
 
-2. Navigate to your project directory and run `claude`.
+If you ever want to skip SSH and use a GitHub PAT instead, the script
+accepts `--use-pat`. The flag is wired in but the PAT flow itself is a
+stub — track it as a future enhancement.
 
-## Plugins
+## What "homebase" means
 
-This repository includes several Claude Code plugins that extend functionality with custom commands and agents. See the [plugins directory](./plugins/README.md) for detailed documentation on available plugins.
+Your WSL home directory (e.g. `/home/hwieland`) is bind-mounted to
+`/home/<you>` inside the container. That means:
 
-## Reporting Bugs
+- `~/.claude` — Claude Code config, projects, agents, memory
+- `~/.gitconfig`, `~/.ssh` — git + ssh identity
+- `~/.bash_history` (or `~/.zsh_history`)
+- Any repos you `git clone ~/github/...` from inside the container
 
-We welcome your feedback. Use the `/bug` command to report issues directly within Claude Code, or file a [GitHub issue](https://github.com/anthropics/claude-code/issues).
+…all live on the WSL host. The container itself is disposable —
+`docker compose down && docker compose up -d --build` loses nothing.
 
-## Connect on Discord
+## Firewall
 
-Join the [Claude Developers Discord](https://anthropic.com/discord) to connect with other developers using Claude Code. Get help, share feedback, and discuss your projects with the community.
+Upstream ships `.devcontainer/init-firewall.sh`, a restrictive iptables
+script that drops most outbound traffic. **In this fork it is not run**
+because it would block FNBA internal hosts (Jira, internal artifact repo,
+DSQL, …) and FNBA already enforces egress at the network level.
 
-## Data collection, usage, and retention
+If you ever want it back, add a `postStart` step that runs
+`sudo /usr/local/bin/init-firewall.sh` and extend its allow-list with the
+FNBA hostnames you need.
 
-When you use Claude Code, we collect feedback, which includes usage data (such as code acceptance or rejections), associated conversation data, and user feedback submitted via the `/bug` command.
+## Working on FNBA repos
 
-### How we use your data
+Inside the container, clone repos into your homebase:
 
-See our [data usage policies](https://code.claude.com/docs/en/data-usage).
+```bash
+mkdir -p ~/github/fnba-software && cd ~/github/fnba-software
+git clone <bitbucket-or-github>/escrow-web-services.git
+git clone <bitbucket-or-github>/fnba-escrow-webapp.git
+```
 
-### Privacy safeguards
+Then run **each repo's own** stack as sibling containers. The Claude
+container has Docker CLI + compose v2 and talks to the host daemon via
+the mounted `/var/run/docker.sock`:
 
-We have implemented several safeguards to protect your data, including limited retention periods for sensitive information, restricted access to user session data, and clear policies against using feedback for model training.
+```bash
+cd ~/github/fnba-software/escrow-web-services
+cp .env-example .env   # fill in DSQL creds
+docker compose -f docker-compose.local.yml up --build
+```
 
-For full details, please review our [Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms) and [Privacy Policy](https://www.anthropic.com/legal/privacy).
+Same pattern for `fnba-escrow-webapp`.
+
+If both stacks need to talk to each other, attach them to a shared
+external network (e.g. `fnba-dev`) in each `docker-compose.local.yml`.
+
+## Relationship to the existing FNBA container
+
+The existing `C:\dev\claude-docker\fnba-claude-docker-dist` Docker setup
+is unchanged and still works. This fork is a parallel POC — eventually it
+may replace that setup, but for now both coexist.
+
+## Keeping in sync with upstream
+
+```bash
+git fetch upstream            # one-time: git remote add upstream https://github.com/anthropics/claude-code
+git checkout main
+git merge upstream/main
+git checkout fnba/main
+git rebase main
+```
+
+All FNBA changes live on `fnba/main` and in **append-only** Dockerfile
+sections, so rebases stay clean.
